@@ -1,15 +1,22 @@
 library(fs)
+
 library(stringr)
-library(rio)
 library(dplyr)
 library(purrr)
+library(lubridate)
+
+library(rio)
+
 library(DBI)
 library(dbplyr)
 
 
 # NEW project id
-old_pid <- 25
-pid <- 26
+old_pid <- 26
+pid <- 29
+redcap_server <- "edc05"
+today_str <- today() |>
+  str_remove_all("-")
 
 
 # upload tbls to REDCap's SQL -------------------------------------
@@ -28,7 +35,7 @@ con <- dbConnect(
 
 # attached files --------------------------------------------------
 
-original_files <- fs::dir_ls(
+original_files <- dir_ls(
   str_glue("~/Downloads/FAITAVI_pid{old_pid}_to_pid{pid}/allegati"),
   type = "file"
 )
@@ -51,41 +58,52 @@ original_meta <- import(
 )
 
 
-get_last_doc_id <- function(con) {
+get_last_doc_id <- function(con, redcap_server) {
   con |>
     dbReadTable(
-      Id(schema = "edc04_redcap", table = "redcap_docs")
+      Id(
+        schema = str_glue("{redcap_server}_redcap"),
+        table = "redcap_docs"
+      )
     ) |>
     pull("docs_id") |>
     max()
 }
 
-destination_meta <- original_meta |>
-  mutate(
-    doc_id = seq_len(nrow(original_meta)) + get_last_doc_id(con),
-    stored_name = stored_name |>
-      str_replace_all("_pid\\d+_", str_glue("_pid{pid}_")),
-    project_id = pid,
-    # This is supposed to signal warnings: all NULL must be converted to
-    # double NAs, while other possibly real content should be converted
-    # from character to double.
-    delete_date = as.double(delete_date),
-    date_deleted_server = as.double(date_deleted_server)
-  )
-
-destination_meta |>
-  export(str_glue(
-    "~/../Downloads/FAITAVI_pid{old_pid}_to_pid{pid}/20240527-pid{pid}_edocs.csv"
-  ))
+update_meta <- function(original_meta, con, redcap_server) {
+  original_meta |>
+    mutate(
+      doc_id = seq_len(nrow(original_meta)) +
+        get_last_doc_id(con, redcap_server),
+      stored_name = stored_name |>
+        str_replace_all("_pid\\d+_", str_glue("_pid{pid}_")),
+      project_id = pid,
+      # This is supposed to signal warnings: all NULL must be converted to
+      # double NAs, while other possibly real content should be converted
+      # from character to double.
+      delete_date = as.double(delete_date),
+      date_deleted_server = as.double(date_deleted_server)
+    )
+}
 
 
 ## edocs_metadata
 con |>
   dbAppendTable(
-    Id(schema = "edc04_redcap", table = "redcap_edocs_metadata"),
-    destination_meta
+    Id(
+      schema = str_glue("{redcap_server}_redcap"),
+      table = "redcap_edocs_metadata"
+    ),
+    {
+      destination_meta <- original_meta |>
+        update_meta(con, redcap_server)
+    }
   )
 
+destination_meta |>
+  export(str_glue(
+    "~/../Downloads/FAITAVI_pid{old_pid}_to_pid{pid}/{today_str}-pid{pid}_edocs.csv"
+  ))
 
 # csv info table --------------------------------------------------
 
@@ -93,13 +111,23 @@ con |>
 ## info
 ## NOTA: la tabella SQL è da prendere dalla tabella projects
 redcap_data_tbl <- con |>
-  dbReadTable(Id(schema = "edc04_redcap", table = "redcap_projects")) |>
+  dbReadTable(
+    Id(
+      schema = str_glue("{redcap_server}_redcap"),
+      table = "redcap_projects"
+    )
+  ) |>
   # IMPORTANT: This is the project ID!!
   filter(project_id == pid) |>
   pull(data_table)
 
 redcap_event_id <- con |>
-  dbReadTable(Id(schema = "edc04_redcap", table = redcap_data_tbl)) |>
+  dbReadTable(
+    Id(
+      schema = str_glue("{redcap_server}_redcap"),
+      table = redcap_data_tbl
+    )
+  ) |>
   filter(project_id == pid) |>
   pull(event_id) |>
   unique()
@@ -131,21 +159,25 @@ if (length(redcap_event_id) == 1) {
 
   destination_info |>
     export(str_glue(
-      "~/../Downloads/FAITAVI_pid{old_pid}_to_pid{pid}/20240520-pid{pid}_info.csv"
+      "~/../Downloads/FAITAVI_pid{old_pid}_to_pid{pid}/{today_str}-pid{pid}_info.csv"
     ))
 
   con |>
     dbAppendTable(
-      Id(schema = "edc04_redcap", table = redcap_data_tbl),
+      Id(
+        schema = str_glue("{redcap_server}_redcap"),
+        table = redcap_data_tbl
+      ),
       destination_info |>
-        mutate(instance = NA_integer_)
+        mutate(instance = as.double(instance))
     )
 
 }
 
+# just explore ----------------------------------------------------
 
 current_redcap_dataN <- con |>
-  dbReadTable(Id(schema = "edc04_redcap", table = redcap_data_tbl))
+  dbReadTable(Id(schema = str_glue("{redcap_server}_redcap"), table = redcap_data_tbl))
 
 original_redcap_dataN <- current_redcap_dataN |>
   filter(project_id != pid)
@@ -153,40 +185,39 @@ original_redcap_dataN <- current_redcap_dataN |>
 #
 # con |>
 #   dbRemoveTable(
-#     Id(schema = "edc04_redcap", table = redcap_data_tbl)
+#     Id(schema = str_glue("{redcap_server}_redcap"), table = redcap_data_tbl)
 #   )
 #
 # con |>
 #   dbCreateTable(
-#     Id(schema = "edc04_redcap", table = redcap_data_tbl),
+#     Id(schema = str_glue("{redcap_server}_redcap"), table = redcap_data_tbl),
 #     original_redcap_dataN
 #   )
 #
 # con |>
 #   dbAppendTable(
-#     Id(schema = "edc04_redcap", table = redcap_data_tbl),
+#     Id(schema = str_glue("{redcap_server}_redcap"), table = redcap_data_tbl),
 #     original_redcap_dataN
 #   )
 #
 
 
 
-# just explore ----------------------------------------------------
 
 con |>
-  dbReadTable(Id(schema = "edc04_redcap", table = redcap_data_tbl)) |>
+  dbReadTable(Id(schema = str_glue("{redcap_server}_redcap"), table = redcap_data_tbl)) |>
   count(record)
 
 
 
 con |>
-  dbReadTable(Id(schema = "edc04_redcap", table = "redcap_edocs_metadata")) |>
+  dbReadTable(Id(schema = str_glue("{redcap_server}_redcap"), table = "redcap_edocs_metadata")) |>
   as_tibble() |>
   filter(str_detect(doc_name, "1006-1"))
 
 
 con |>
-  dbReadTable(Id(schema = "edc04_redcap", table = redcap_data_tbl)) |>
+  dbReadTable(Id(schema = str_glue("{redcap_server}_redcap"), table = redcap_data_tbl)) |>
   as_tibble() |>
   filter(str_detect(value, "^163$"))
 
