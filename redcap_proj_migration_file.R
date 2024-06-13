@@ -13,8 +13,9 @@ library(dbplyr)
 
 # NEW project id
 proj <- "IT_MASTERS"
-old_pid <- 208
-pid <- 33
+original_pid <- 208
+old_pid <- 33
+pid <- 34
 redcap_server <- "edc04"
 today_str <- today() |>
   str_remove_all("-")
@@ -47,7 +48,7 @@ connect_to_redcap <- function() {
 # attached files --------------------------------------------------
 
 original_files <- dir_ls(
-  str_glue("~/Downloads/{proj}_pid{old_pid}_to_pid{pid}/allegati"),
+  str_glue("~/Downloads/{proj}_pid{original_pid}/allegati"),
   type = "file"
 )
 
@@ -65,14 +66,14 @@ file_move(original_files, destination_files)
 
 original_meta <- import(
   str_glue(
-    "~/../Downloads/{proj}_pid{old_pid}_to_pid{pid}/",
-    "{proj}_{old_pid}_edocs.csv"
+    "~/../Downloads/{proj}_pid{original_pid}/",
+    "{proj}_{original_pid}_edocs.csv"
   ),
   setclass = "tibble"
 )
 
 
-get_last_doc_id <- function(con, redcap_server) {
+get_last_doc_id <- function(redcap_server) {
   connect_to_redcap() |>
     dbReadTable(
       Id(
@@ -84,11 +85,26 @@ get_last_doc_id <- function(con, redcap_server) {
     max()
 }
 
-update_meta <- function(original_meta, con, redcap_server) {
-  original_meta |>
+update_meta <- function(original_meta, redcap_server) {
+  current_docs <- connect_to_redcap() |>
+    dbReadTable(
+      Id(
+        schema = str_glue("{redcap_server}_redcap"),
+        table = "redcap_edocs_metadata"
+      )
+    ) |>
+    tibble::as_tibble() |>
+    dplyr::filter(project_id == pid) |>
+    dplyr::pull(doc_name) |>
+    unique()
+
+  pruned_meta <- original_meta |>
+    dplyr::filter(!doc_name %in% current_docs)
+
+  pruned_meta |>
     mutate(
-      doc_id = seq_len(nrow(original_meta)) +
-        get_last_doc_id(con, redcap_server),
+      doc_id = seq_len(nrow(pruned_meta)) +
+        get_last_doc_id(redcap_server),
       stored_name = stored_name |>
         str_replace_all("_pid\\d+_", str_glue("_pid{pid}_")),
       project_id = pid,
@@ -102,27 +118,55 @@ update_meta <- function(original_meta, con, redcap_server) {
 
 
 ## edocs_metadata
-connect_to_redcap() |>
-  dbAppendTable(
-    Id(
-      schema = str_glue("{redcap_server}_redcap"),
-      table = "redcap_edocs_metadata"
-    ),
-    {
-      destination_meta <- original_meta |>
-        update_meta(con, redcap_server)
-    }
-  )
+update_edocs_metadata <- function() {
+  usethis::ui_todo("Start updating metadata: {tic <- lubridate::now()}")
+  connect_to_redcap() |>
+    dbAppendTable(
+      Id(
+        schema = str_glue("{redcap_server}_redcap"),
+        table = "redcap_edocs_metadata"
+      ),
+      {
+        destination_meta <- original_meta |>
+          update_meta(redcap_server)
+      }
+    )
+  usethis::ui_done("Finalized metadata update: {toc <- lubridate::now()}")
+  usethis::ui_info("Rows appended: {nrow(destination_meta)}")
+  round(toc - tic, 2)
+}
+update_edocs_metadata()
 
 destination_meta |>
   export(str_glue(
-    "~/../Downloads/{proj}_pid{old_pid}_to_pid{pid}/{today_str}-pid{pid}_edocs.csv"
+    "~/../Downloads/{proj}_pid{original_pid}/{today_str}-pid{pid}_edocs.csv"
   ))
 
 # csv info table --------------------------------------------------
 
 
 ## info
+doc_id_mapping_db <- destination_meta |>
+  dplyr::select(doc_id, stored_name) |>
+  left_join(
+    original_meta |>
+      dplyr::select(doc_id, stored_name) |>
+      dplyr::mutate(
+        stored_name = stored_name |>
+          str_replace_all("_pid\\d+_", str_glue("_pid{pid}_"))
+      ) |>
+      dplyr::rename(
+        original_doc_id = doc_id
+      )
+  )
+
+doc_id_mapping <- purrr::set_names(
+  doc_id_mapping_db[["doc_id"]],
+  doc_id_mapping_db[["original_doc_id"]]
+)
+
+
+
 ## NOTA: la tabella SQL è da prendere dalla tabella projects
 redcap_data_tbl <-  connect_to_redcap() |>
   dbReadTable(
@@ -135,42 +179,45 @@ redcap_data_tbl <-  connect_to_redcap() |>
   filter(project_id == pid) |>
   pull(data_table)
 
+# Gli event id sono TUTTI gli eventi della form originale
+# Ma noi dobbiamo mappare solo quelli che contengono file allegati
+#
 
-redcap_event_id <-  connect_to_redcap() |>
-  dbReadTable(
-    Id(
-      schema = str_glue("{redcap_server}_redcap"),
-      table = redcap_data_tbl
-    )
-  ) |>
-  filter(project_id == pid) |>
-  pull(event_id) |>
-  unique() |>
-  sort()
-
-
-doc_id_mapping <- destination_meta[["doc_id"]] |>
-  set_names(original_meta[["doc_id"]])
-
-original_event_id_mapping <- unique(original_info[["event_id"]]) |>
-  (\(x) set_names(order(x), x))()
-
-
-
+# Questi sono gli event id contenenti file allegati
 original_info <- import(
   str_glue(
-    "~/../Downloads/{proj}_pid{old_pid}_to_pid{pid}/",
-    "{proj}_{old_pid}_info.csv"
+    "~/../Downloads/{proj}_pid{original_pid}/",
+    "{proj}_{original_pid}_info.csv"
   ),
   setclass = "tibble"
 )
 
+
+# A MANO!!! dobbiamo assegnare agli event id contenenti file allegati
+# i nomi deigli event id originali corrispondenti
+#
+# qui assegnamo ai nuovi event id i nomi di quelli orginali, in modo da mapparli
+# guardando i file di un record A MANO con l éxel di file info  prendere i due id e andare a vedere quali soo gli id degli eventi corrispondenti.
+#
+
+stopifnot(
+ `devi farlo a mano!!` = {
+   event_id_maping <- c(
+     `908` = 96, # procedure_file_upload
+     `920` = 103 # repeat_angiography_file_upload
+   )
+   usethis::ui_yeah(
+     "Lo hai modificato a mano verificando su REDCap la corrispondenza?!"
+  )
+ }
+)
+
+
+
 destination_info <- original_info |>
   mutate(
     project_id = pid,
-    event_id = redcap_event_id[
-      original_event_id_mapping[as.character(original_info[["event_id"]])]
-    ],
+    event_id = event_id_maping[as.character(.data[["event_id"]])],
     value = doc_id_mapping[as.character(.data[["value"]])]
   ) |>
   select(all_of(c(
@@ -179,7 +226,7 @@ destination_info <- original_info |>
 
 destination_info |>
   export(str_glue(
-    "~/../Downloads/{proj}_pid{old_pid}_to_pid{pid}/",
+    "~/../Downloads/{proj}_pid{original_pid}/",
     "{today_str}-pid{pid}_info.csv"
   ))
 
@@ -195,11 +242,11 @@ connect_to_redcap() |>
 
 # just explore ----------------------------------------------------
 
-current_redcap_dataN <-  connect_to_redcap() |>
-  dbReadTable(Id(schema = str_glue("{redcap_server}_redcap"), table = redcap_data_tbl))
-
-original_redcap_dataN <- current_redcap_dataN |>
-  filter(project_id != pid)
+# current_redcap_dataN <-  connect_to_redcap() |>
+#   dbReadTable(Id(schema = str_glue("{redcap_server}_redcap"), table = redcap_data_tbl))
+#
+# original_redcap_dataN <- current_redcap_dataN |>
+#   filter(project_id != pid)
 
 #
 #  connect_to_redcap() |>
@@ -221,25 +268,25 @@ original_redcap_dataN <- current_redcap_dataN |>
 #
 
 
-
-
-connect_to_redcap() |>
-  dbReadTable(Id(schema = str_glue("{redcap_server}_redcap"), table = redcap_data_tbl)) |>
-  count(record)
-
-
-
-connect_to_redcap() |>
-  dbReadTable(Id(schema = str_glue("{redcap_server}_redcap"), table = "redcap_edocs_metadata")) |>
-  as_tibble() |>
-  filter(str_detect(doc_name, "1006-1"))
-
-
-connect_to_redcap() |>
-  dbReadTable(Id(schema = str_glue("{redcap_server}_redcap"), table = redcap_data_tbl)) |>
-  as_tibble() |>
-  filter(str_detect(value, "^163$"))
-
+#
+#
+# connect_to_redcap() |>
+#   dbReadTable(Id(schema = str_glue("{redcap_server}_redcap"), table = redcap_data_tbl)) |>
+#   count(record)
+#
+#
+#
+# connect_to_redcap() |>
+#   dbReadTable(Id(schema = str_glue("{redcap_server}_redcap"), table = "redcap_edocs_metadata")) |>
+#   as_tibble() |>
+#   filter(str_detect(doc_name, "1006-1"))
+#
+#
+# connect_to_redcap() |>
+#   dbReadTable(Id(schema = str_glue("{redcap_server}_redcap"), table = redcap_data_tbl)) |>
+#   as_tibble() |>
+#   filter(str_detect(value, "^163$"))
+#
 
 # filtered <-  connect_to_redcap() |>
 #   dbReadTable(
