@@ -12,10 +12,10 @@ library(dbplyr)
 
 
 # NEW project id
-proj <- "IT_MASTERS"
-original_pid <- 208
-old_pid <- 33
-pid <- 34
+proj <- "CAVEAT"
+original_pid <- 215
+old_pid <- 30
+pid <- 30
 redcap_server <- "edc04"
 today_str <- today() |>
   str_remove_all("-")
@@ -127,7 +127,7 @@ update_edocs_metadata <- function() {
         table = "redcap_edocs_metadata"
       ),
       {
-        destination_meta <- original_meta |>
+        destination_meta <<- original_meta |>
           update_meta(redcap_server)
       }
     )
@@ -192,6 +192,9 @@ original_info <- import(
   setclass = "tibble"
 )
 
+original_info |>
+  dplyr::select(event_id, field_name) |>
+  unique()
 
 # A MANO!!! dobbiamo assegnare agli event id contenenti file allegati
 # i nomi deigli event id originali corrispondenti
@@ -201,7 +204,7 @@ original_info <- import(
 #
 
 stopifnot(
- `devi farlo a mano!!` = {
+ `Devi farlo a mano!!` = {
    event_id_maping <- c(
      `908` = 96, # procedure_file_upload
      `920` = 103 # repeat_angiography_file_upload
