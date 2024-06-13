@@ -12,7 +12,7 @@ library(dbplyr)
 
 
 # NEW project id
-proj <- "IT_MASTER"
+proj <- "IT_MASTERS"
 old_pid <- 208
 pid <- 33
 redcap_server <- "edc04"
@@ -31,17 +31,18 @@ get_or_ask_sql_psw <- function() {
   }
 }
 
-con <- dbConnect(
-  odbc::odbc(),
-  Driver = "mysql",
-  Server = "mysql-ubep.mysql.database.azure.com",
-  Port = "3306",
-  UID = "gregorid@mysql-ubep",
-  PWD = get_or_ask_sql_psw(),
-  Database = "susysafe_v2",
-  timeout = 10
-)
-
+connect_to_redcap <- function() {
+  dbConnect(
+    odbc::odbc(),
+    Driver = "mysql",
+    Server = "mysql-ubep.mysql.database.azure.com",
+    Port = "3306",
+    UID = "gregorid@mysql-ubep",
+    PWD = get_or_ask_sql_psw(),
+    Database = "susysafe_v2",
+    timeout = 10
+  )
+}
 
 # attached files --------------------------------------------------
 
@@ -72,7 +73,7 @@ original_meta <- import(
 
 
 get_last_doc_id <- function(con, redcap_server) {
-  con |>
+  connect_to_redcap() |>
     dbReadTable(
       Id(
         schema = str_glue("{redcap_server}_redcap"),
@@ -101,7 +102,7 @@ update_meta <- function(original_meta, con, redcap_server) {
 
 
 ## edocs_metadata
-con |>
+connect_to_redcap() |>
   dbAppendTable(
     Id(
       schema = str_glue("{redcap_server}_redcap"),
@@ -123,7 +124,7 @@ destination_meta |>
 
 ## info
 ## NOTA: la tabella SQL è da prendere dalla tabella projects
-redcap_data_tbl <- con |>
+redcap_data_tbl <-  connect_to_redcap() |>
   dbReadTable(
     Id(
       schema = str_glue("{redcap_server}_redcap"),
@@ -135,7 +136,7 @@ redcap_data_tbl <- con |>
   pull(data_table)
 
 
-redcap_event_id <- con |>
+redcap_event_id <-  connect_to_redcap() |>
   dbReadTable(
     Id(
       schema = str_glue("{redcap_server}_redcap"),
@@ -182,7 +183,7 @@ destination_info |>
     "{today_str}-pid{pid}_info.csv"
   ))
 
-con |>
+connect_to_redcap() |>
   dbAppendTable(
     Id(
       schema = str_glue("{redcap_server}_redcap"),
@@ -194,25 +195,25 @@ con |>
 
 # just explore ----------------------------------------------------
 
-current_redcap_dataN <- con |>
+current_redcap_dataN <-  connect_to_redcap() |>
   dbReadTable(Id(schema = str_glue("{redcap_server}_redcap"), table = redcap_data_tbl))
 
 original_redcap_dataN <- current_redcap_dataN |>
   filter(project_id != pid)
 
 #
-# con |>
+#  connect_to_redcap() |>
 #   dbRemoveTable(
 #     Id(schema = str_glue("{redcap_server}_redcap"), table = redcap_data_tbl)
 #   )
 #
-# con |>
+#  connect_to_redcap() |>
 #   dbCreateTable(
 #     Id(schema = str_glue("{redcap_server}_redcap"), table = redcap_data_tbl),
 #     original_redcap_dataN
 #   )
 #
-# con |>
+#  connect_to_redcap() |>
 #   dbAppendTable(
 #     Id(schema = str_glue("{redcap_server}_redcap"), table = redcap_data_tbl),
 #     original_redcap_dataN
@@ -222,25 +223,25 @@ original_redcap_dataN <- current_redcap_dataN |>
 
 
 
-con |>
+connect_to_redcap() |>
   dbReadTable(Id(schema = str_glue("{redcap_server}_redcap"), table = redcap_data_tbl)) |>
   count(record)
 
 
 
-con |>
+connect_to_redcap() |>
   dbReadTable(Id(schema = str_glue("{redcap_server}_redcap"), table = "redcap_edocs_metadata")) |>
   as_tibble() |>
   filter(str_detect(doc_name, "1006-1"))
 
 
-con |>
+connect_to_redcap() |>
   dbReadTable(Id(schema = str_glue("{redcap_server}_redcap"), table = redcap_data_tbl)) |>
   as_tibble() |>
   filter(str_detect(value, "^163$"))
 
 
-# filtered <- con |>
+# filtered <-  connect_to_redcap() |>
 #   dbReadTable(
 #     Id(
 #       schema = str_glue("{redcap_server}_redcap"),
@@ -249,7 +250,7 @@ con |>
 #   ) |>
 #   filter(str_detect(field_name, "^please", negate = TRUE)) |>
 #   as_tibble()
-# con |>
+#  connect_to_redcap() |>
 #   dbWriteTable(
 #     "edc04_redcap.redcap_data",
 #     filtered,
