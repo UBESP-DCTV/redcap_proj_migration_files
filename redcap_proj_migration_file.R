@@ -12,14 +12,24 @@ library(dbplyr)
 
 
 # NEW project id
-old_pid <- 26
-pid <- 29
-redcap_server <- "edc05"
+proj <- "IT_MASTER"
+old_pid <- 208
+pid <- 33
+redcap_server <- "edc04"
 today_str <- today() |>
   str_remove_all("-")
 
 
 # upload tbls to REDCap's SQL -------------------------------------
+
+get_or_ask_sql_psw <- function() {
+  env_psw <- Sys.getenv("REDCAP_SQL_PSW")
+  if (env_psw == "") {
+    rstudioapi::askForPassword("SQL password:")
+  } else {
+    env_psw
+  }
+}
 
 con <- dbConnect(
   odbc::odbc(),
@@ -27,7 +37,7 @@ con <- dbConnect(
   Server = "mysql-ubep.mysql.database.azure.com",
   Port = "3306",
   UID = "gregorid@mysql-ubep",
-  PWD = rstudioapi::askForPassword("Database password:"),
+  PWD = get_or_ask_sql_psw(),
   Database = "susysafe_v2",
   timeout = 10
 )
@@ -36,7 +46,7 @@ con <- dbConnect(
 # attached files --------------------------------------------------
 
 original_files <- dir_ls(
-  str_glue("~/Downloads/FAITAVI_pid{old_pid}_to_pid{pid}/allegati"),
+  str_glue("~/Downloads/{proj}_pid{old_pid}_to_pid{pid}/allegati"),
   type = "file"
 )
 
@@ -53,7 +63,10 @@ file_move(original_files, destination_files)
 # csv edocs metadata table ----------------------------------------
 
 original_meta <- import(
-  str_glue("~/../Downloads/FAITAVI_pid{old_pid}_to_pid{pid}/_{old_pid}_edocs.csv"),
+  str_glue(
+    "~/../Downloads/{proj}_pid{old_pid}_to_pid{pid}/",
+    "{proj}_{old_pid}_edocs.csv"
+  ),
   setclass = "tibble"
 )
 
@@ -63,10 +76,10 @@ get_last_doc_id <- function(con, redcap_server) {
     dbReadTable(
       Id(
         schema = str_glue("{redcap_server}_redcap"),
-        table = "redcap_docs"
+        table = "redcap_edocs_metadata"
       )
     ) |>
-    pull("docs_id") |>
+    pull("doc_id") |>
     max()
 }
 
@@ -102,7 +115,7 @@ con |>
 
 destination_meta |>
   export(str_glue(
-    "~/../Downloads/FAITAVI_pid{old_pid}_to_pid{pid}/{today_str}-pid{pid}_edocs.csv"
+    "~/../Downloads/{proj}_pid{old_pid}_to_pid{pid}/{today_str}-pid{pid}_edocs.csv"
   ))
 
 # csv info table --------------------------------------------------
@@ -121,6 +134,7 @@ redcap_data_tbl <- con |>
   filter(project_id == pid) |>
   pull(data_table)
 
+
 redcap_event_id <- con |>
   dbReadTable(
     Id(
@@ -130,49 +144,53 @@ redcap_event_id <- con |>
   ) |>
   filter(project_id == pid) |>
   pull(event_id) |>
-  unique()
+  unique() |>
+  sort()
 
-stopifnot(
-  `!!! Manualy investigation on event_id is required !!!` =
-    length(redcap_event_id) == 1
-)
 
 doc_id_mapping <- destination_meta[["doc_id"]] |>
   set_names(original_meta[["doc_id"]])
 
+original_event_id_mapping <- unique(original_info[["event_id"]]) |>
+  (\(x) set_names(order(x), x))()
+
+
+
 original_info <- import(
-  str_glue("~/../Downloads/FAITAVI_pid{old_pid}_to_pid{pid}/_{old_pid}_info.csv"),
+  str_glue(
+    "~/../Downloads/{proj}_pid{old_pid}_to_pid{pid}/",
+    "{proj}_{old_pid}_info.csv"
+  ),
   setclass = "tibble"
 )
 
-if (length(redcap_event_id) == 1) {
+destination_info <- original_info |>
+  mutate(
+    project_id = pid,
+    event_id = redcap_event_id[
+      original_event_id_mapping[as.character(original_info[["event_id"]])]
+    ],
+    value = doc_id_mapping[as.character(.data[["value"]])]
+  ) |>
+  select(all_of(c(
+    "project_id", "event_id", "record", "field_name", "value", "instance"
+  )))
 
-  destination_info <- original_info |>
-    mutate(
-      project_id = pid,
-      event_id = redcap_event_id,
-      value = doc_id_mapping[as.character(.data[["value"]])]
-    ) |>
-    select(all_of(c(
-      "project_id", "event_id", "record", "field_name", "value", "instance"
-    )))
+destination_info |>
+  export(str_glue(
+    "~/../Downloads/{proj}_pid{old_pid}_to_pid{pid}/",
+    "{today_str}-pid{pid}_info.csv"
+  ))
 
-  destination_info |>
-    export(str_glue(
-      "~/../Downloads/FAITAVI_pid{old_pid}_to_pid{pid}/{today_str}-pid{pid}_info.csv"
-    ))
-
-  con |>
-    dbAppendTable(
-      Id(
-        schema = str_glue("{redcap_server}_redcap"),
-        table = redcap_data_tbl
-      ),
-      destination_info |>
-        mutate(instance = as.double(instance))
-    )
-
-}
+con |>
+  dbAppendTable(
+    Id(
+      schema = str_glue("{redcap_server}_redcap"),
+      table = redcap_data_tbl
+    ),
+    destination_info |>
+      mutate(instance = as.double(instance))
+  )
 
 # just explore ----------------------------------------------------
 
@@ -222,3 +240,18 @@ con |>
   filter(str_detect(value, "^163$"))
 
 
+# filtered <- con |>
+#   dbReadTable(
+#     Id(
+#       schema = str_glue("{redcap_server}_redcap"),
+#       table = redcap_data_tbl
+#     )
+#   ) |>
+#   filter(str_detect(field_name, "^please", negate = TRUE)) |>
+#   as_tibble()
+# con |>
+#   dbWriteTable(
+#     "edc04_redcap.redcap_data",
+#     filtered,
+#     overwrite = TRUE
+#   )
