@@ -12,13 +12,52 @@ library(dbplyr)
 
 
 # NEW project id
-proj <- "CAVEAT"
-original_pid <- 215
-old_pid <- 30
-pid <- 30
-redcap_server <- "edc04"
+proj <- rstudioapi::showPrompt(
+  "REDCap info set",
+  "Inserisci il nome del progetto REDcap",
+  if (exists("proj")) proj else ""
+)
+
+original_pid <- rstudioapi::showPrompt(
+  "REDCap info set",
+  "Inserisci il project id del progetto originale",
+  if (exists("original_pid")) original_pid else ""
+) |>
+  as.integer()
+
+
+old_pid <- rstudioapi::showPrompt(
+  "REDCap info set",
+  "Inserisci il project id dell'ultimo progetto importato (se è la prima volta, inserisci l'original_pid)",
+  if (exists("old_pid")) old_pid else ""
+) |>
+  as.integer()
+
+pid <- rstudioapi::showPrompt(
+  "REDCap info set",
+  "Inserisci il project id del nuovo progetto su cui importarlo",
+  if (exists("pid")) pid else ""
+) |>
+  as.integer()
+
+redcap_server <- rstudioapi::showPrompt(
+  "REDCap info set",
+  "Inserisci il server REDCap (es. 'susysafe')",
+  if (exists("redcap_server")) redcap_server else ""
+)
+
 today_str <- today() |>
   str_remove_all("-")
+
+
+stopifnot(
+  `Devi controllare che i record siano associati ai DAG!!` =
+  usethis::ui_yeah(
+    "Hai controllato su REDCap ({redcap_server}) che, nel progetto {proj} (pid {pid}), i record siano stati correttaemnte associati ai corrispondenti DAG?"
+  )
+)
+
+
 
 
 # upload tbls to REDCap's SQL -------------------------------------
@@ -108,11 +147,16 @@ update_meta <- function(original_meta, redcap_server) {
       stored_name = stored_name |>
         str_replace_all("_pid\\d+_", str_glue("_pid{pid}_")),
       project_id = pid,
-      # This is supposed to signal warnings: all NULL must be converted to
-      # double NAs, while other possibly real content should be converted
-      # from character to double.
-      delete_date = as.double(delete_date),
-      date_deleted_server = as.double(date_deleted_server)
+      # All "NULL" characters must
+      # be converted to double NAs, while other possibly real content
+      # should be converted from character to double.
+      delete_date = delete_date |>
+        str_replace_all("NULL", NA_character_) |>
+        as.double(),
+      # same for date_deleted_server
+      date_deleted_server = date_deleted_server |>
+        str_replace_all("NULL", NA_character_) |>
+        as.double()
     )
 }
 
@@ -135,6 +179,7 @@ update_edocs_metadata <- function() {
   usethis::ui_info("Rows appended: {nrow(destination_meta)}")
   round(toc - tic, 2)
 }
+
 update_edocs_metadata()
 
 destination_meta |>
@@ -194,7 +239,8 @@ original_info <- import(
 
 original_info |>
   dplyr::select(event_id, field_name) |>
-  unique()
+  unique() |>
+  dplyr::slice_head(n = 1, by = event_id)
 
 # A MANO!!! dobbiamo assegnare agli event id contenenti file allegati
 # i nomi deigli event id originali corrispondenti
@@ -205,12 +251,15 @@ original_info |>
 
 stopifnot(
  `Devi farlo a mano!!` = {
-   event_id_maping <- c(
-     `908` = 96, # procedure_file_upload
-     `920` = 103 # repeat_angiography_file_upload
+   event_id_mapping <- c(
+     `908` = 70,
+     `920` = 77
    )
    usethis::ui_yeah(
-     "Lo hai modificato a mano verificando su REDCap la corrispondenza?!"
+     "Questa l'attuale corrisppondenza:
+{str_c('old: ', names(event_id_mapping), '--> new: ', event_id_mapping, collapse = '\n')}
+
+Lo hai modificato a mano verificando su REDCap la corrispondenza?!"
   )
  }
 )
@@ -220,7 +269,7 @@ stopifnot(
 destination_info <- original_info |>
   mutate(
     project_id = pid,
-    event_id = event_id_maping[as.character(.data[["event_id"]])],
+    event_id = event_id_mapping[as.character(.data[["event_id"]])],
     value = doc_id_mapping[as.character(.data[["value"]])]
   ) |>
   select(all_of(c(
@@ -240,69 +289,9 @@ connect_to_redcap() |>
       table = redcap_data_tbl
     ),
     destination_info |>
-      mutate(instance = as.double(instance))
+      mutate(
+        instance = instance |>
+          str_replace_all("NULL", NA_character_) |>
+          as.double()
+      )
   )
-
-# just explore ----------------------------------------------------
-
-# current_redcap_dataN <-  connect_to_redcap() |>
-#   dbReadTable(Id(schema = str_glue("{redcap_server}_redcap"), table = redcap_data_tbl))
-#
-# original_redcap_dataN <- current_redcap_dataN |>
-#   filter(project_id != pid)
-
-#
-#  connect_to_redcap() |>
-#   dbRemoveTable(
-#     Id(schema = str_glue("{redcap_server}_redcap"), table = redcap_data_tbl)
-#   )
-#
-#  connect_to_redcap() |>
-#   dbCreateTable(
-#     Id(schema = str_glue("{redcap_server}_redcap"), table = redcap_data_tbl),
-#     original_redcap_dataN
-#   )
-#
-#  connect_to_redcap() |>
-#   dbAppendTable(
-#     Id(schema = str_glue("{redcap_server}_redcap"), table = redcap_data_tbl),
-#     original_redcap_dataN
-#   )
-#
-
-
-#
-#
-# connect_to_redcap() |>
-#   dbReadTable(Id(schema = str_glue("{redcap_server}_redcap"), table = redcap_data_tbl)) |>
-#   count(record)
-#
-#
-#
-# connect_to_redcap() |>
-#   dbReadTable(Id(schema = str_glue("{redcap_server}_redcap"), table = "redcap_edocs_metadata")) |>
-#   as_tibble() |>
-#   filter(str_detect(doc_name, "1006-1"))
-#
-#
-# connect_to_redcap() |>
-#   dbReadTable(Id(schema = str_glue("{redcap_server}_redcap"), table = redcap_data_tbl)) |>
-#   as_tibble() |>
-#   filter(str_detect(value, "^163$"))
-#
-
-# filtered <-  connect_to_redcap() |>
-#   dbReadTable(
-#     Id(
-#       schema = str_glue("{redcap_server}_redcap"),
-#       table = redcap_data_tbl
-#     )
-#   ) |>
-#   filter(str_detect(field_name, "^please", negate = TRUE)) |>
-#   as_tibble()
-#  connect_to_redcap() |>
-#   dbWriteTable(
-#     "edc04_redcap.redcap_data",
-#     filtered,
-#     overwrite = TRUE
-#   )
